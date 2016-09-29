@@ -8,7 +8,10 @@ IdaBatchDecompile Plugin and Script adds annotation and batch decompilation func
 
 Usage:
 
-* as idascript: IDA Pro -> File/Script file... ->
+* as idascript in ida gui mode: IDA Pro -> File/Script file... -> IdaDecompileBatch ...
+* as idascript in ida cmdline mode: ida(w|w64) -B -M -S"<path_to_this_script> \"--option1\" \"--option2\"", "<target>"
+ * see --help for options
+* as Plugin: follow ida documentation on how to add python plugins
 
 """
 import sys
@@ -243,7 +246,7 @@ class IdaDecompileBatchController(object):
                                               annotate_xrefs = self.chk_annotate_xrefs,
                                               imports = self.chk_decompile_imports,
                                               recursive = self.chk_decompile_imports_recursive,
-                                              experimental_decomile_ctree = self.chk_decompile_alternative)
+                                              experimental_decomile_cgraph = self.chk_decompile_alternative)
 
         if self.chk_decompile_alternative:
             raise NotImplemented("Not yet implemented")
@@ -292,7 +295,7 @@ class IdaDecompileBatchController(object):
         return '%s.c' % os.path.join(root, fname)
 
     def exec_ida_batch_decompile(self, target, output, annotate_stackvar_size, annotate_xrefs, imports, recursive,
-                                 experimental_decomile_ctree):
+                                 experimental_decomile_cgraph):
         logger.debug("[+] batch decompile %r" % target)
         # todo: pass commandlines,
         # todo parse commandline
@@ -305,8 +308,8 @@ class IdaDecompileBatchController(object):
             script_args.append("--imports")
         if recursive:
             script_args.append("--recursive")
-        if experimental_decomile_ctree:
-            script_args.append("--experimental-decompile-ctree")
+        if experimental_decomile_cgraph:
+            script_args.append("--experimental-decompile-cgraph")
 
         script_args = ['\\"%s\\"' % a for a in script_args]
         command = "%s %s" % (self.my_path, ' '.join(script_args))
@@ -344,9 +347,9 @@ class DecompileBatchForm(Form):
 <##OutputPath:{outputPath}>
 <##Annotate StackVar Size:{chkAnnotateStackVars}>
 <##Annotate Func XRefs   :{chkAnnotateXrefs}>
-<##Decompile Imports     :{chkDecompileImports}>
-<##Decompile Recursive   :{chkDecompileImportsRecursive}>
-<##Alternative Decompile :{chkDecompileAlternative}>{cGroup1}>
+<##Process Imports       :{chkDecompileImports}>
+<##Recursive             :{chkDecompileImportsRecursive}>
+<##Cgraph (experimental) :{chkDecompileAlternative}>{cGroup1}>
 """, {
                           'target': Form.FileInput(swidth=50, open=True, value=idbctrl.target_path),
                           'outputPath': Form.DirInput(swidth=50, value=idbctrl.output_path),
@@ -367,7 +370,7 @@ class DecompileBatchForm(Form):
         if fid == INIT:
             self.EnableField(self.target, False)
             self.EnableField(self.outputPath, False)
-            pass
+            self.EnableField(self.chkDecompileAlternative, False)
 
         elif fid == BTN_OK:
             self.idbctrl.target = self.target.value
@@ -482,7 +485,7 @@ def PLUGIN_ENTRY(mode=None):
             parser.add_option("-R", "--recursive",
                               action="store_true", default=False,
                               help="Recursive decompile files/imports")
-            parser.add_option("-Z", "--experimental-decompile-ctree",
+            parser.add_option("-Z", "--experimental-decompile-cgraph",
                               action="store_true", default=False,
                               help="[experimental] decompile funcs referenced in calltree manually")
 
@@ -493,7 +496,7 @@ def PLUGIN_ENTRY(mode=None):
             idbctrl.chk_annotate_xrefs = options.annotate_xrefs
             idbctrl.chk_decompile_imports = options.imports
             idbctrl.chk_decompile_imports_recursive = options.recursive
-            idbctrl.chk_decompile_alternative = options.experimental_decompile_ctree
+            idbctrl.chk_decompile_alternative = options.experimental_decompile_cgraph
             # set all the idbctrl checkboxes and files
             idbctrl.run()
             idc.Exit(0)
