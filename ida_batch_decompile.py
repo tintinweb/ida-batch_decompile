@@ -411,7 +411,7 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
     help = "github.com/tintinweb"
     wanted_name = "IdaDecompileBatch"
     wanted_hotkey = ""
-    wanted_menu = "File/Produce file/", "{} ...".format(IdaDecompileBatchPlugin.wanted_name)
+    wanted_menu = "File/Produce file/", "{} ...".format(wanted_name)
 
     def init(self):
         NO_HOTKEY = ""
@@ -421,7 +421,7 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
         logger.debug("[+] %s.init()" % self.__class__.__name__)
         self.menuitems = []
 
-        logger.debug("[+] setting up context menus")
+        logger.debug("[+] setting up menus")
         menu = idaapi.add_menu_item(self.wanted_menu[0],
                                     self.wanted_menu[1],
                                     NO_HOTKEY,
