@@ -20,11 +20,14 @@ import idautils
 from idc import *
 import json
 import glob
+import subprocess
+import shutil
+import os
+import tempfile
 from optparse import OptionParser
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 class IdaLocation(object):
     """ Wrap idautils Function
@@ -117,7 +120,6 @@ class IdaLocation(object):
                                'diff_size': size})
         return stack_size, stack_vars
 
-
 class IdaHelper(object):
     """ Namespace for ida helper functions
     """
@@ -188,7 +190,6 @@ class IdaHelper(object):
         print "[+] stats: %r" % stats
         print "[+] Done!"
 
-
 class IdaDecompileBatchController(object):
     def __init__(self):
         self.is_windows = sys.platform.startswith('win')
@@ -196,9 +197,8 @@ class IdaDecompileBatchController(object):
         logger.debug("[+] is_windows: %r" % self.is_windows)
         logger.debug("[+] is_ida64: %r" % self.is_ida64)
         self.my_path = os.path.abspath(__file__)
-        self.target_path = idc.GetInputFilePath()
-        self.target_file = idc.GetInputFile()
-        self.target_dir = os.path.split(self.target_path)[0]
+        self.temp_path = None
+        self._init_target()
         # settings (form)
         # todo: load from configfile if available.
         self.output_path = None
@@ -211,7 +211,28 @@ class IdaDecompileBatchController(object):
         self.ida_home = GetIdaDirectory()
         # wait for ida analysis to finish
         self.wait_for_analysis_to_finish()
-        self.load_plugin_decompiler()
+        if not idaapi.init_hexrays_plugin():
+            logger.warning("forcing hexrays to load...")
+            self.load_plugin_decompiler()
+        if not idaapi.init_hexrays_plugin():
+            raise Exception("hexrays decompiler is not available :(")
+
+    def _init_target(self):
+        self.target_path = idc.GetInputFilePath()
+        self.target_file = idc.GetInputFile()
+        self.target_dir = os.path.split(self.target_path)[0]
+        logger.debug("reinitializing target: %r" % self.target_file)
+
+    def init_tempdir(self):
+        self.temp_path = self.temp_path or tempfile.mkdtemp(prefix="idbc_")
+        logger.debug("[i] using tempdir: %r" % self.temp_path)
+
+    def remove_tempdir(self):
+        if not self.temp_path:
+            return
+        logger.debug("[i] removing tempdir: %r" % self.temp_path)
+        shutil.rmtree(self.temp_path)
+        self.temp_path = None
 
     def wait_for_analysis_to_finish(self):
         logger.debug("[+] waiting for analysis to finish...")
@@ -232,28 +253,41 @@ class IdaDecompileBatchController(object):
         logger.debug("[+] decompiler plugins loaded.")
 
     def run(self):
+        files_decompiled = []
+        self._init_target()
+
+        if self.chk_decompile_imports:
+            self.init_tempdir()
+            if self.chk_decompile_imports_recursive:
+                pass
+            for image_path in self.enumerate_import_images():
+                try:
+                    self.exec_ida_batch_decompile(target = image_path, output = self.output_path,
+                                                  annotate_stackvar_size = self.chk_annotate_stackvar_size,
+                                                  annotate_xrefs = self.chk_annotate_xrefs,
+                                                  imports = self.chk_decompile_imports,
+                                                  recursive = self.chk_decompile_imports_recursive,
+                                                  experimental_decomile_cgraph = self.chk_decompile_alternative)
+                    files_decompiled.append(image_path)
+                except subprocess.CalledProcessError, cpe:
+                    logger.warning("[!] failed to decompile %r - %r" % (image_path, cpe))
+
+            self.remove_tempdir()
+
         if self.chk_annotate_stackvar_size:
             self.annotate_stack_variable_size()
         if self.chk_annotate_xrefs:
             self.annotate_xrefs()
 
-        if self.chk_decompile_imports:
-            if self.chk_decompile_imports_recursive:
-                pass
-            for image_path in self.enumerate_import_images():
-                self.exec_ida_batch_decompile(target = image_path, output = self.output_path,
-                                              annotate_stackvar_size = self.chk_annotate_stackvar_size,
-                                              annotate_xrefs = self.chk_annotate_xrefs,
-                                              imports = self.chk_decompile_imports,
-                                              recursive = self.chk_decompile_imports_recursive,
-                                              experimental_decomile_cgraph = self.chk_decompile_alternative)
-
         if self.chk_decompile_alternative:
             raise NotImplemented("Not yet implemented")
             pass
         else:
-            pass
             self.decompile_all(self.output_path)
+            files_decompiled.append(self.target_file)
+
+        logger.info("[+] finished decompiling: %r" % files_decompiled)
+        logger.info("    output dir: %s"%self.output_path if self.output_path else self.target_dir)
 
     def annotate_stack_variable_size(self):
         logger.debug("[+] annotating function stack variables")
@@ -265,23 +299,42 @@ class IdaDecompileBatchController(object):
         IdaHelper.annotate_xrefs()
         logger.debug("[+] done.")
 
+    def file_is_decompilable(self, path):
+        with open(path, 'rb') as ftest:
+            magic = ftest.read(4)
+            if magic == 'MZ\x90\x00':
+                return 'pe/dos'
+            elif magic == "\x7fELF":
+                return 'elf'
+        return None
+
     def enumerate_import_images(self):
         for import_name in IdaHelper.get_imports():
             logger.debug("[i] trying to find image for %r" % import_name)
             for image_path in glob.glob(os.path.join(self.target_dir, import_name) + '*'):
-                logger.debug("[i] got image %r" % image_path)
-                yield image_path
+                image_type = self.file_is_decompilable(image_path)
+                if image_type:
+                    logger.debug("[i] got image %r as %r" % (image_path, image_type))
+                    yield image_path
+                    # I do not think there's any need to check other files with the same name ?!
+                    break
 
     def decompile_all(self, outfile=None):
-        outfile = outfile or self._get_suggested_output_filename(self.target_path)
+        outfile = self._get_suggested_output_filename(outfile or self.target_path)
+        logger.warning(outfile)
         logger.debug("[+] trying to decompile %r as %r" % (self.target_file,
                                                            os.path.split(outfile)[1]))
         IdaHelper.decompile_full(outfile)
         logger.debug("[+] finished decompiling %r as %r" % (self.target_file,
-                                                        os.path.split(outfile)[1]))
+                                                            os.path.split(outfile)[1]))
 
     def _get_suggested_output_filename(self, target):
         # /a/b/c/d/e/bin.ext
+        # target is a directory
+        if os.path.isdir(target):
+            fname, fext = os.path.splitext(self.target_file)
+            return '%s.c' % os.path.join(target, fname)
+        # target is not a directory
         root, fname = os.path.split(target)
         if fname:
             fname, fext = os.path.splitext(fname)  # bin,ext
@@ -313,24 +366,28 @@ class IdaDecompileBatchController(object):
 
         script_args = ['\\"%s\\"' % a for a in script_args]
         command = "%s %s" % (self.my_path, ' '.join(script_args))
-
-        ret = self._exec_ida_batch(target, command)
-        if ret != 0:
-            raise Exception("command failed: %s" % ret)
-        return ret
+        self._exec_ida_batch(target, command)
 
     def _exec_ida_batch(self, target, command):
         # build exe path
-        ida_exe = os.path.join(self.ida_home, 'idaw64' if self.is_ida64 else 'idaw')
         if self.is_windows:
-            ida_exe += ".exe"
-        cmd = [ida_exe, '-B', '-M', '-S"%s"' % command, '"' + target + '"']
+            ida_exe = os.path.join(self.ida_home, 'idaw64.exe' if self.is_ida64 else 'idaw.exe')
+        else:
+            ida_exe = os.path.join(self.ida_home, 'idal64' if self.is_ida64 else 'idal')
+        '''
+        https://www.hex-rays.com/products/ida/support/idadoc/417.shtml
+        -B  ..  Batch mode
+        -M  ..  disable mouse
+        -c  ..  create new database
+        -o  ..  database output path
+        -S  ..  execute script
+        '''
+        cmd = [ida_exe, '-B', '-M', '-c', '-o"%s"'%self.init_tempdir(), '-S"%s"' % command, '"' + target + '"']
         logger.debug(' '.join(cmd))
         logger.debug('[+] executing: %r' % cmd)
         #return 0
         # TODO: INSECURE!
-        return subprocess.call(' '.join(cmd), shell=True)
-
+        return subprocess.check_call(' '.join(cmd), shell=True)
 
 class DecompileBatchForm(Form):
     """
@@ -369,17 +426,18 @@ class DecompileBatchForm(Form):
 
         if fid == INIT:
             self.EnableField(self.target, False)
-            self.EnableField(self.outputPath, False)
+            self.EnableField(self.outputPath, True)
             self.EnableField(self.chkDecompileAlternative, False)
 
         elif fid == BTN_OK:
             self.idbctrl.target = self.target.value
 
-            if self.outputPath.value == '' or os.path.exists(self.outputPath.value):
-
-                self.idbctrl.output_path = self.outputPath.value
+            outputPath = self.GetControlValue(self.outputPath)
+            if outputPath == '' or os.path.exists(outputPath):
+                self.idbctrl.output_path = outputPath
             else:
-                logger.warning("[!!] output path not valid! %r" % self.outputPath.value)
+                logger.warning("[!!] output path not valid! %r" % outputPath)
+                self.idbctrl.output_path = None
 
             self.idbctrl.chk_annotate_stackvar_size = self.chkAnnotateStackVars.checked
             self.idbctrl.chk_decompile_imports = self.chkDecompileImports.checked
@@ -402,7 +460,6 @@ class DecompileBatchForm(Form):
             self.chkAnnotateXrefs.checked = not self.chkAnnotateXrefs.checked
 
         return False
-
 
 class IdaDecompileBatchPlugin(idaapi.plugin_t):
     """ IDA Plugin Base"""
@@ -442,6 +499,7 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
 
     def menu_config(self):
         logger.debug("[+] %s.menu_config()" % self.__class__.__name__)
+        self.idbctrl._init_target() # force target reinit
         if DecompileBatchForm(self.idbctrl).Execute():
             logger.debug("[+] decompiling...")
             self.idbctrl.run()
@@ -449,7 +507,6 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
     def set_ctrl(self, idbctrl):
         logger.debug("[+] %s.set_ctrl(%r)" % (self.__class__.__name__, idbctrl))
         self.idbctrl = idbctrl
-
 
 def PLUGIN_ENTRY(mode=None):
     """ check execution mode:
@@ -513,7 +570,6 @@ def PLUGIN_ENTRY(mode=None):
         return plugin
 
     else:
-
         logger.debug("[+] Mode: plugin")
         # PluginMode
         plugin = IdaDecompileBatchPlugin()
