@@ -4,6 +4,7 @@
 
 IDA Batch Decompile is a plugin for Hex-Ray's IDA Pro that adds the ability to batch decompile multiple files and their imports with additional annotations (xref, stack var size) to the pseudocode .c file
 
+![idabatchdecompile_](https://cloud.githubusercontent.com/assets/2865694/19216325/1ce27f90-8db7-11e6-862a-4f71f1176276.gif)
 
 # Usage
 
