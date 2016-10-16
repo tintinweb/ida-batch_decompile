@@ -260,7 +260,7 @@ class IdaDecompileBatchController(object):
             self.init_tempdir()
             if self.chk_decompile_imports_recursive:
                 pass
-            for image_path in self.enumerate_import_images():
+            for image_type, image_name, image_path in self.enumerate_import_images():
                 try:
                     self.exec_ida_batch_decompile(target = image_path, output = self.output_path,
                                                   annotate_stackvar_size = self.chk_annotate_stackvar_size,
@@ -316,7 +316,7 @@ class IdaDecompileBatchController(object):
                 image_type = self.file_is_decompilable(image_path)
                 if image_type:
                     logger.debug("[i] got image %r as %r" % (image_path, image_type))
-                    yield image_path
+                    yield image_type, os.path.split(image_path)[1], image_path
                     # I do not think there's any need to check other files with the same name ?!
                     break
 
@@ -440,15 +440,20 @@ class TestEmbeddedChooserClass(Choose2):
         for idx in self.selected:
             yield self.items[idx-1]
 
+    def addItem(self, e):
+        if e not in self.items:
+            self.items.append(e)
+
 class DecompileBatchForm(Form):
     """
     Form to prompt for target file, backup file, and the address
     range to save patched bytes.
     """
 
-    def __init__(self, idbctrl):
+    def __init__(self, idbctrl, enumerate_imports=True, enumerate_other=False):
         self.idbctrl = idbctrl
-        self.EChooser = TestEmbeddedChooserClass("E1", flags=Choose2.CH_MULTI)
+        self.EChooser = TestEmbeddedChooserClass("Batch Decompile", flags=Choose2.CH_MULTI)
+        self.propagateItems(enumerate_imports=enumerate_imports, enumerate_other=enumerate_other)
         Form.__init__(self,
                       r"""Batch Decompile ...
 {FormChangeCb}
@@ -460,11 +465,11 @@ class DecompileBatchForm(Form):
 <##Cgraph (experimental) :{chkDecompileAlternative}>{cGroup1}>
 
 
-<##Load:{btnLoad}>
-<##Recursive:{chkDecompileImportsRecursive}>{cGroup2}>
-<Candidates in Target Directory:{cEChooser}>
+<##Scan Target Directory:{btnLoad}> <##Recursive:{chkDecompileImportsRecursive}>{cGroup2}>
+<##Decompile!:{btnProcessFiles}>
+<Please select items to decompile:{cEChooser}>
 
-<##BatchDecompile:{btnProcessFiles}>
+
 """, {
                           'target': Form.FileInput(swidth=50, open=True, value=idbctrl.target_path),
                           'outputPath': Form.DirInput(swidth=50, value=idbctrl.output_path),
@@ -477,13 +482,27 @@ class DecompileBatchForm(Form):
                           'btnProcessFiles': Form.ButtonInput(self.OnButtonProcess),
                           'cEChooser': Form.EmbeddedChooserControl(self.EChooser),
                       })
-
         self.Compile()
+
+    def propagateItems(self, enumerate_imports=False, enumerate_other=False):
+        self.EChooser.addItem([self.idbctrl.file_is_decompilable(self.idbctrl.target_path),
+                               os.path.split(self.idbctrl.target_path)[1],
+                               self.idbctrl.target_path])
+
+        if enumerate_imports:
+            for candidate in self.idbctrl.enumerate_import_images():
+                self.EChooser.addItem(list(candidate))
+        if enumerate_other:
+            for candidate in self.idbctrl.enumerate_files(recursive=self.chkDecompileImportsRecursive.checked):
+                self.EChooser.addItem(list(candidate))
 
     def OnButtonProcess(self, code=0):
         ### process selected files
-        self.idbctrl.target = self.target.value
+        if not len(list(self.EChooser.getSelected())):
+            logger.warning("[!] Aborting. Please select at least one item from the list!")
+            return
 
+        self.idbctrl.target = self.target.value
         outputPath = self.GetControlValue(self.outputPath)
         if outputPath == '' or os.path.exists(outputPath):
             self.idbctrl.output_path = outputPath
@@ -499,9 +518,13 @@ class DecompileBatchForm(Form):
         logger.debug("[+] config updated")
 
         files_decompiled = []
+        decompile_main_binary = False
 
         self.idbctrl.init_tempdir()
         for _type, name, image_path in self.EChooser.getSelected():
+            if image_path is self.idbctrl.target_path:
+                decompile_main_binary = True
+                continue
             try:
                 self.idbctrl.exec_ida_batch_decompile(target=image_path, output=outputPath,
                                               annotate_stackvar_size=self.idbctrl.chk_annotate_stackvar_size,
@@ -515,15 +538,17 @@ class DecompileBatchForm(Form):
 
         self.idbctrl.remove_tempdir()
         ## process current file
-        logger.debug("[+] decompiling current file...")
-        files_decompiled += self.idbctrl.run()
-        logger.info("[+] finished decompiling: %r" % files_decompiled)
-        logger.info("    output dir: %s" % self.idbctrl.output_path if self.idbctrl.output_path else self.idbctrl.target_dir)
+        if decompile_main_binary:
+            # well, loop here even though we know it can only
+            logger.debug("[+] decompiling current file...")
+            files_decompiled += self.idbctrl.run()  # decompile main binary
+            logger.info("[+] finished decompiling: %r" % files_decompiled)
+            logger.info("    output dir: %s" % self.idbctrl.output_path if self.idbctrl.output_path else self.idbctrl.target_dir)
 
     def OnButtonLoad(self, code=0):
-        for candidate in self.idbctrl.enumerate_files(recursive=self.chkDecompileImportsRecursive.checked):
-            self.EChooser.items.append(list(candidate))
-        self.EChooser.Refresh()
+        self.Close(0)
+        self.propagateItems(enumerate_other=True, enumerate_imports=True)
+        self.Execute()
 
     def OnFormChange(self, fid):
         # Set initial state
