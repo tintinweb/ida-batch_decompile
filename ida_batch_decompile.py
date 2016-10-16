@@ -260,7 +260,7 @@ class IdaDecompileBatchController(object):
             self.init_tempdir()
             if self.chk_decompile_imports_recursive:
                 pass
-            for image_path in self.enumerate_import_images():
+            for image_type, image_name, image_path in self.enumerate_import_images():
                 try:
                     self.exec_ida_batch_decompile(target = image_path, output = self.output_path,
                                                   annotate_stackvar_size = self.chk_annotate_stackvar_size,
@@ -288,6 +288,7 @@ class IdaDecompileBatchController(object):
 
         logger.info("[+] finished decompiling: %r" % files_decompiled)
         logger.info("    output dir: %s"%self.output_path if self.output_path else self.target_dir)
+        return files_decompiled
 
     def annotate_stack_variable_size(self):
         logger.debug("[+] annotating function stack variables")
@@ -315,9 +316,21 @@ class IdaDecompileBatchController(object):
                 image_type = self.file_is_decompilable(image_path)
                 if image_type:
                     logger.debug("[i] got image %r as %r" % (image_path, image_type))
-                    yield image_path
+                    yield image_type, os.path.split(image_path)[1], image_path
                     # I do not think there's any need to check other files with the same name ?!
                     break
+
+    def enumerate_files(self, recursive=False):
+        for root, dirs, files in os.walk(self.target_dir):
+            for name in files:
+                fpath = os.path.join(root, name)
+                logger.debug("[+] checking %r" % fpath)
+                try:
+                    ftype = self.file_is_decompilable(fpath)
+                    if ftype:
+                        logger.debug("[+] is candidate %r" % [fpath, ftype])
+                        yield ftype, name, fpath
+                except IOError: pass
 
     def decompile_all(self, outfile=None):
         outfile = self._get_suggested_output_filename(outfile or self.target_path)
@@ -382,12 +395,54 @@ class IdaDecompileBatchController(object):
         -o  ..  database output path
         -S  ..  execute script
         '''
-        cmd = [ida_exe, '-B', '-M', '-c', '-o"%s"'%self.init_tempdir(), '-S"%s"' % command, '"' + target + '"']
+        #temp_path = os.path.join(self.temp_path, os.path.splitext(os.path.split(target)[1])[0] + '.idb')
+        cmd = [ida_exe, '-B', '-M', '-c', '-o"%s"'%self.temp_path if self.temp_path else '', '-S"%s"' % command, '"' + target + '"']
         logger.debug(' '.join(cmd))
         logger.debug('[+] executing: %r' % cmd)
         #return 0
         # TODO: INSECURE!
         return subprocess.check_call(' '.join(cmd), shell=True)
+
+
+class TestEmbeddedChooserClass(Choose2):
+    """
+    A simple chooser to be used as an embedded chooser
+    """
+    def __init__(self, title, nb = 5, flags=0):
+        Choose2.__init__(self,
+                         title,
+                         [ ["Type", 10], ["Name", 10],  ["Path", 30] ],
+                         embedded=True, width=50, height=10, flags=flags)
+        self.n = 0
+        self.items = []
+        self.icon = 5
+        self.selcount = 0
+
+        self.selected = []
+
+    def OnClose(self):
+        pass
+
+    def OnGetLine(self, n):
+        return self.items[n]
+
+    def OnGetSize(self):
+        n = len(self.items)
+        return n
+
+    def OnRefresh(self, n):
+        print "refresh %s"%n
+
+    def OnSelectionChange(self, sel_list):
+        self.selected = sel_list
+
+    def getSelected(self):
+        for idx in self.selected:
+            yield self.items[idx-1]
+
+    def addItem(self, e):
+        if e not in self.items:
+            self.items.append(e)
 
 class DecompileBatchForm(Form):
     """
@@ -395,8 +450,10 @@ class DecompileBatchForm(Form):
     range to save patched bytes.
     """
 
-    def __init__(self, idbctrl):
+    def __init__(self, idbctrl, enumerate_imports=True, enumerate_other=False):
         self.idbctrl = idbctrl
+        self.EChooser = TestEmbeddedChooserClass("Batch Decompile", flags=Choose2.CH_MULTI)
+        self.propagateItems(enumerate_imports=enumerate_imports, enumerate_other=enumerate_other)
         Form.__init__(self,
                       r"""Batch Decompile ...
 {FormChangeCb}
@@ -405,19 +462,93 @@ class DecompileBatchForm(Form):
 <##Annotate StackVar Size:{chkAnnotateStackVars}>
 <##Annotate Func XRefs   :{chkAnnotateXrefs}>
 <##Process Imports       :{chkDecompileImports}>
-<##Recursive             :{chkDecompileImportsRecursive}>
 <##Cgraph (experimental) :{chkDecompileAlternative}>{cGroup1}>
+
+
+<##Scan Target Directory:{btnLoad}> <##Recursive:{chkDecompileImportsRecursive}>{cGroup2}>
+<##Decompile!:{btnProcessFiles}>
+<Please select items to decompile:{cEChooser}>
+
+
 """, {
                           'target': Form.FileInput(swidth=50, open=True, value=idbctrl.target_path),
                           'outputPath': Form.DirInput(swidth=50, value=idbctrl.output_path),
                           'cGroup1': Form.ChkGroupControl(("chkAnnotateStackVars", "chkAnnotateXrefs",
                                                            "chkDecompileImports",
-                                                           "chkDecompileImportsRecursive",
                                                            "chkDecompileAlternative")),
+                          'cGroup2': Form.ChkGroupControl(("chkDecompileImportsRecursive", )),
                           'FormChangeCb': Form.FormChangeCb(self.OnFormChange),
+                          'btnLoad':  Form.ButtonInput(self.OnButtonLoad),
+                          'btnProcessFiles': Form.ButtonInput(self.OnButtonProcess),
+                          'cEChooser': Form.EmbeddedChooserControl(self.EChooser),
                       })
-
         self.Compile()
+
+    def propagateItems(self, enumerate_imports=False, enumerate_other=False):
+        self.EChooser.addItem([self.idbctrl.file_is_decompilable(self.idbctrl.target_path),
+                               os.path.split(self.idbctrl.target_path)[1],
+                               self.idbctrl.target_path])
+
+        if enumerate_imports:
+            for candidate in self.idbctrl.enumerate_import_images():
+                self.EChooser.addItem(list(candidate))
+        if enumerate_other:
+            for candidate in self.idbctrl.enumerate_files(recursive=self.chkDecompileImportsRecursive.checked):
+                self.EChooser.addItem(list(candidate))
+
+    def OnButtonProcess(self, code=0):
+        ### process selected files
+        if not len(list(self.EChooser.getSelected())):
+            logger.warning("[!] Aborting. Please select at least one item from the list!")
+            return
+
+        self.idbctrl.target = self.target.value
+        outputPath = self.GetControlValue(self.outputPath)
+        if outputPath == '' or os.path.exists(outputPath):
+            self.idbctrl.output_path = outputPath
+        else:
+            logger.warning("[!!] output path not valid! %r" % outputPath)
+            self.idbctrl.output_path = None
+
+        self.idbctrl.chk_annotate_stackvar_size = self.chkAnnotateStackVars.checked
+        self.idbctrl.chk_decompile_imports = self.chkDecompileImports.checked
+        self.idbctrl.chk_decompile_imports_recursive = self.chkDecompileImportsRecursive.checked
+        self.idbctrl.chk_annotate_xrefs = self.chkAnnotateXrefs.checked
+        self.idbctrl.chk_decompile_alternative = self.chkDecompileAlternative.checked
+        logger.debug("[+] config updated")
+
+        files_decompiled = []
+        decompile_main_binary = False
+
+        self.idbctrl.init_tempdir()
+        for _type, name, image_path in self.EChooser.getSelected():
+            if image_path is self.idbctrl.target_path:
+                decompile_main_binary = True
+                continue
+            try:
+                self.idbctrl.exec_ida_batch_decompile(target=image_path, output=outputPath,
+                                              annotate_stackvar_size=self.idbctrl.chk_annotate_stackvar_size,
+                                              annotate_xrefs=self.idbctrl.chk_annotate_xrefs,
+                                              imports=self.idbctrl.chk_decompile_imports,
+                                              recursive=self.idbctrl.chk_decompile_imports_recursive,
+                                              experimental_decomile_cgraph=self.idbctrl.chk_decompile_alternative)
+                files_decompiled.append(image_path)
+            except subprocess.CalledProcessError, cpe:
+                logger.warning("[!] failed to decompile %r - %r" % (image_path, cpe))
+
+        self.idbctrl.remove_tempdir()
+        ## process current file
+        if decompile_main_binary:
+            # well, loop here even though we know it can only
+            logger.debug("[+] decompiling current file...")
+            files_decompiled += self.idbctrl.run()  # decompile main binary
+            logger.info("[+] finished decompiling: %r" % files_decompiled)
+            logger.info("    output dir: %s" % self.idbctrl.output_path if self.idbctrl.output_path else self.idbctrl.target_dir)
+
+    def OnButtonLoad(self, code=0):
+        self.Close(0)
+        self.propagateItems(enumerate_other=True, enumerate_imports=True)
+        self.Execute()
 
     def OnFormChange(self, fid):
         # Set initial state
@@ -430,21 +561,7 @@ class DecompileBatchForm(Form):
             self.EnableField(self.chkDecompileAlternative, False)
 
         elif fid == BTN_OK:
-            self.idbctrl.target = self.target.value
-
-            outputPath = self.GetControlValue(self.outputPath)
-            if outputPath == '' or os.path.exists(outputPath):
-                self.idbctrl.output_path = outputPath
-            else:
-                logger.warning("[!!] output path not valid! %r" % outputPath)
-                self.idbctrl.output_path = None
-
-            self.idbctrl.chk_annotate_stackvar_size = self.chkAnnotateStackVars.checked
-            self.idbctrl.chk_decompile_imports = self.chkDecompileImports.checked
-            self.idbctrl.chk_decompile_imports_recursive = self.chkDecompileImportsRecursive.checked
-            self.idbctrl.chk_annotate_xrefs = self.chkAnnotateXrefs.checked
-            self.idbctrl.chk_decompile_alternative = self.chkDecompileAlternative.checked
-            logger.debug("[+] config updated")
+            # just return
             return True
 
         # Toggle backup checkbox
@@ -500,9 +617,7 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
     def menu_config(self):
         logger.debug("[+] %s.menu_config()" % self.__class__.__name__)
         self.idbctrl._init_target() # force target reinit
-        if DecompileBatchForm(self.idbctrl).Execute():
-            logger.debug("[+] decompiling...")
-            self.idbctrl.run()
+        DecompileBatchForm(self.idbctrl).Execute()
 
     def set_ctrl(self, idbctrl):
         logger.debug("[+] %s.set_ctrl(%r)" % (self.__class__.__name__, idbctrl))
