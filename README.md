@@ -20,7 +20,7 @@ Note: File will be saved in target folder as `<target_image_name.c>`
 
 ## idascript (cmdline batch mode)
 
-    <path_to_ida>/ida(w|w64)(.exe) -B -M -S"<path_to_this_script> \"--option1\" \"--option2\"", "<target>"`
+    <path_to_ida>/ida(w|w64)(.exe) -B -M -S"<path_to_this_script> \"--option1\" \"--option2\"" "<target>"
 
 Note that options need to be quoted with `\"`
 
