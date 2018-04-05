@@ -6,6 +6,9 @@ IDA Batch Decompile is a plugin for Hex-Ray's IDA Pro that adds the ability to b
 
 ![idabatchdecompile](https://cloud.githubusercontent.com/assets/2865694/19421079/a88707d6-93f8-11e6-86b2-483b923f5574.gif)
 
+
+:baby_chick: pssst! *- *ida-batch_decompile* is also part of project: [unbox](https://github.com/tintinweb/unbox) - a nobrainer commandline tool to unpack and decompile all sorts of things.*
+
 # Usage
 
 ## idascript (gui mode)
