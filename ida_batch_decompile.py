@@ -30,6 +30,8 @@ from idc import *
 if idaapi.IDA_SDK_VERSION >= 700:
     import ida_idaapi
     import ida_kernwin
+    from idaapi import *
+    from idc import *
 
 import logging
 
@@ -166,8 +168,8 @@ class IdaHelper(object):
                 comment.append("*******************")
                 SetFunctionCmt(f.start, '\n'.join(comment), 0)
                 stats['annotated_functions'] += 1
-            except Exception, e:
-                print repr(e)
+            except Exception as e:
+                print ("Annotate XRefs: %r"%e)
                 stats['errors'] += 1
         print "[+] stats: %r" % stats
         print "[+] Done!"
@@ -193,7 +195,7 @@ class IdaHelper(object):
                 SetFunctionCmt(f.start, '\n'.join(comment), 0)
                 stats['annotated_functions'] += 1
             except Exception, e:
-                print repr(e)
+                print ("Annotate Funcs: %r" % e)
                 stats['errors'] += 1
         print "[+] stats: %r" % stats
         print "[+] Done!"
@@ -413,11 +415,15 @@ class IdaDecompileBatchController(object):
         return subprocess.check_call(' '.join(cmd), shell=True)
 
 
-class TestEmbeddedChooserClass(Choose2):
+class TestEmbeddedChooserClass(Choose,Choose2):
     """
     A simple chooser to be used as an embedded chooser
     """
     def __init__(self, title, nb = 5, flags=0):
+        Choose.__init__(self,
+                         title,
+                         [["Type", 10], ["Name", 10], ["Path", 30]],
+                         flags=flags)
         Choose2.__init__(self,
                          title,
                          [ ["Type", 10], ["Name", 10],  ["Path", 30] ],
@@ -465,7 +471,7 @@ class DecompileBatchForm(Form):
         self.EChooser = TestEmbeddedChooserClass("Batch Decompile", flags=Choose2.CH_MULTI)
         self.propagateItems(enumerate_imports=enumerate_imports, enumerate_other=enumerate_other)
         Form.__init__(self,
-                      r"""Batch Decompile ...
+                      r"""Ida Batch Decompile ...
 {FormChangeCb}
 <##Target    :{target}>
 <##OutputPath:{outputPath}>
@@ -612,10 +618,10 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
     flags = idaapi.PLUGIN_FIX
     comment = "Batch Decompile"
     help = "github.com/tintinweb"
-    wanted_name = "IdaDecompileBatch"
+    wanted_name = "Ida Batch Decompile"
     wanted_hotkey = ""
     wanted_menu = "File/Produce file/", "{} ...".format(wanted_name)
-    wanted_menu_id = 'my:batchdecompile'
+    wanted_menu_id = 'tintinweb:batchdecompile'
 
     def init(self):
         NO_HOTKEY = ""
@@ -629,18 +635,9 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
 
         if idaapi.IDA_SDK_VERSION >= 700:
             # >= 700
-            action_desc = idaapi.action_desc_t(
-                name=self.wanted_menu_id,
-                label=self.wanted_name,
-                handler=IdaDecompileUiActionHandler(self),
-                shortcut='',
-                tooltip=self.comment,
-            )
+            action_desc = idaapi.action_desc_t("tintinweb:batchdecompile:load", self.wanted_name, IdaDecompileUiActionHandler(self))
             idaapi.register_action(action_desc)
-            idaapi.attach_action_to_menu(
-                menupath=''.join(self.wanted_menu),
-                name=self.wanted_menu_id+"action",
-                flags=idaapi.SETMENU_APP)
+            idaapi.attach_action_to_menu(''.join(self.wanted_menu), "tintinweb:batchdecompile:load", idaapi.SETMENU_APP)
 
         else:
             menu = idaapi.add_menu_item(self.wanted_menu[0],
@@ -650,7 +647,7 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
                                         self.menu_config,
                                         NO_ARGS)
 
-        self.menuitems.append(menu)
+            self.menuitems.append(menu)
 
         return idaapi.PLUGIN_KEEP
 
