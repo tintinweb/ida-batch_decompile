@@ -15,9 +15,6 @@ Usage:
 
 """
 import sys
-import idaapi
-import idautils
-from idc import *
 import json
 import glob
 import subprocess
@@ -25,9 +22,21 @@ import shutil
 import os
 import tempfile
 from optparse import OptionParser
+
+import idaapi
+import idautils
+from idc import *
+
+if idaapi.IDA_SDK_VERSION >= 700:
+    import ida_idaapi
+    import ida_kernwin
+    from idaapi import *
+    from idc import *
+
 import logging
 
 logger = logging.getLogger(__name__)
+
 
 class IdaLocation(object):
     """ Wrap idautils Function
@@ -120,6 +129,7 @@ class IdaLocation(object):
                                'diff_size': size})
         return stack_size, stack_vars
 
+
 class IdaHelper(object):
     """ Namespace for ida helper functions
     """
@@ -158,8 +168,8 @@ class IdaHelper(object):
                 comment.append("*******************")
                 SetFunctionCmt(f.start, '\n'.join(comment), 0)
                 stats['annotated_functions'] += 1
-            except Exception, e:
-                print repr(e)
+            except Exception as e:
+                print ("Annotate XRefs: %r"%e)
                 stats['errors'] += 1
         print "[+] stats: %r" % stats
         print "[+] Done!"
@@ -185,10 +195,11 @@ class IdaHelper(object):
                 SetFunctionCmt(f.start, '\n'.join(comment), 0)
                 stats['annotated_functions'] += 1
             except Exception, e:
-                print repr(e)
+                print ("Annotate Funcs: %r" % e)
                 stats['errors'] += 1
         print "[+] stats: %r" % stats
         print "[+] Done!"
+
 
 class IdaDecompileBatchController(object):
     def __init__(self):
@@ -404,11 +415,15 @@ class IdaDecompileBatchController(object):
         return subprocess.check_call(' '.join(cmd), shell=True)
 
 
-class TestEmbeddedChooserClass(Choose2):
+class TestEmbeddedChooserClass(Choose,Choose2):
     """
     A simple chooser to be used as an embedded chooser
     """
     def __init__(self, title, nb = 5, flags=0):
+        Choose.__init__(self,
+                         title,
+                         [["Type", 10], ["Name", 10], ["Path", 30]],
+                         flags=flags)
         Choose2.__init__(self,
                          title,
                          [ ["Type", 10], ["Name", 10],  ["Path", 30] ],
@@ -444,6 +459,7 @@ class TestEmbeddedChooserClass(Choose2):
         if e not in self.items:
             self.items.append(e)
 
+
 class DecompileBatchForm(Form):
     """
     Form to prompt for target file, backup file, and the address
@@ -455,7 +471,7 @@ class DecompileBatchForm(Form):
         self.EChooser = TestEmbeddedChooserClass("Batch Decompile", flags=Choose2.CH_MULTI)
         self.propagateItems(enumerate_imports=enumerate_imports, enumerate_other=enumerate_other)
         Form.__init__(self,
-                      r"""Batch Decompile ...
+                      r"""Ida Batch Decompile ...
 {FormChangeCb}
 <##Target    :{target}>
 <##OutputPath:{outputPath}>
@@ -578,14 +594,34 @@ class DecompileBatchForm(Form):
 
         return False
 
+
+if idaapi.IDA_SDK_VERSION >= 700:
+    class IdaDecompileUiActionHandler(idaapi.action_handler_t):
+
+        def __init__(self, caller):
+            idaapi.action_handler_t.__init__(self)
+            self.caller = caller
+
+        def activate(self, ctx):
+            self.caller.menu_config()
+            return 1
+
+        def update(self, ctx):
+            return idaapi.AST_ENABLE_ALWAYS
+
+            def update(self, ctx):
+                return idaapi.AST_ENABLE_ALWAYS
+
+
 class IdaDecompileBatchPlugin(idaapi.plugin_t):
     """ IDA Plugin Base"""
     flags = idaapi.PLUGIN_FIX
     comment = "Batch Decompile"
     help = "github.com/tintinweb"
-    wanted_name = "IdaDecompileBatch"
+    wanted_name = "Ida Batch Decompile"
     wanted_hotkey = ""
     wanted_menu = "File/Produce file/", "{} ...".format(wanted_name)
+    wanted_menu_id = 'tintinweb:batchdecompile'
 
     def init(self):
         NO_HOTKEY = ""
@@ -595,14 +631,23 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
         logger.debug("[+] %s.init()" % self.__class__.__name__)
         self.menuitems = []
 
-        logger.debug("[+] setting up menus")
-        menu = idaapi.add_menu_item(self.wanted_menu[0],
-                                    self.wanted_menu[1],
-                                    NO_HOTKEY,
-                                    SETMENU_INS,
-                                    self.menu_config,
-                                    NO_ARGS)
-        self.menuitems.append(menu)
+        logger.debug("[+] setting up menus for ida version %s" % idaapi.IDA_SDK_VERSION)
+
+        if idaapi.IDA_SDK_VERSION >= 700:
+            # >= 700
+            action_desc = idaapi.action_desc_t("tintinweb:batchdecompile:load", self.wanted_name, IdaDecompileUiActionHandler(self))
+            idaapi.register_action(action_desc)
+            idaapi.attach_action_to_menu(''.join(self.wanted_menu), "tintinweb:batchdecompile:load", idaapi.SETMENU_APP)
+
+        else:
+            menu = idaapi.add_menu_item(self.wanted_menu[0],
+                                        self.wanted_menu[1],
+                                        NO_HOTKEY,
+                                        SETMENU_INS,
+                                        self.menu_config,
+                                        NO_ARGS)
+
+            self.menuitems.append(menu)
 
         return idaapi.PLUGIN_KEEP
 
@@ -611,8 +656,9 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
 
     def term(self):
         logger.debug("[+] %s.term()" % self.__class__.__name__)
-        for menu in self.menuitems:
-            idaapi.del_menu_item(menu)
+        if idaapi.IDA_SDK_VERSION < 700:
+            for menu in self.menuitems:
+                idaapi.del_menu_item(menu)
 
     def menu_config(self):
         logger.debug("[+] %s.menu_config()" % self.__class__.__name__)
@@ -622,6 +668,7 @@ class IdaDecompileBatchPlugin(idaapi.plugin_t):
     def set_ctrl(self, idbctrl):
         logger.debug("[+] %s.set_ctrl(%r)" % (self.__class__.__name__, idbctrl))
         self.idbctrl = idbctrl
+
 
 def PLUGIN_ENTRY(mode=None):
     """ check execution mode:
@@ -691,5 +738,7 @@ def PLUGIN_ENTRY(mode=None):
         plugin.set_ctrl(idbctrl=idbctrl)
         return plugin
 
+
 if __name__ == '__main__':
     PLUGIN_ENTRY(mode=__name__)
+
